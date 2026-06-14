@@ -106,6 +106,11 @@ const DATABASE_CAPABILITY_OVERRIDES: Partial<Record<DatabaseType, Partial<Databa
   },
   manticoresearch: {
     tableData: {
+      insert: true,
+      updateRequiresPrimaryKey: false,
+      deleteRequiresPrimaryKey: false,
+      keylessRowPredicate: true,
+      requiresTransactionalTableForExistingRows: false,
       transaction: false,
     },
   },

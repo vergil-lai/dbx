@@ -12,6 +12,7 @@ pub(super) enum StructureDialect {
     H2,
     ClickHouse,
     ManticoreSearch,
+    Informix,
     Unsupported,
 }
 
@@ -65,8 +66,7 @@ pub(super) fn capabilities_for(database_type: Option<DatabaseType>) -> TableStru
             | DatabaseType::StarRocks
             | DatabaseType::Goldendb
             | DatabaseType::Sundb
-            | DatabaseType::Databend
-            | DatabaseType::Gbase,
+            | DatabaseType::Databend,
         ) => TableStructureCapabilities {
             dialect: StructureDialect::Mysql,
             add_column: true,
@@ -81,6 +81,13 @@ pub(super) fn capabilities_for(database_type: Option<DatabaseType>) -> TableStru
             index_type: true,
             index_comment: true,
             alter_primary_key: true,
+            ..base
+        },
+        Some(DatabaseType::Gbase) => TableStructureCapabilities {
+            dialect: StructureDialect::Mysql,
+            add_column: true,
+            drop_column: true,
+            rename_column: true,
             ..base
         },
         Some(
@@ -204,6 +211,17 @@ pub(super) fn capabilities_for(database_type: Option<DatabaseType>) -> TableStru
             drop_column: true,
             ..base
         },
+        Some(DatabaseType::Informix) => TableStructureCapabilities {
+            dialect: StructureDialect::Informix,
+            add_column: true,
+            drop_column: true,
+            rename_column: true,
+            alter_existing_column: true,
+            create_index: true,
+            drop_index: true,
+            rebuild_index: true,
+            ..base
+        },
         _ => base,
     }
 }
@@ -235,6 +253,7 @@ pub(super) fn dialect_label(dialect: StructureDialect) -> String {
         StructureDialect::H2 => "h2",
         StructureDialect::ClickHouse => "clickhouse",
         StructureDialect::ManticoreSearch => "manticoresearch",
+        StructureDialect::Informix => "informix",
         StructureDialect::Unsupported => "this database",
     }
     .to_string()
@@ -252,6 +271,7 @@ pub(super) fn database_type_for_dialect(dialect: StructureDialect) -> Option<Dat
         StructureDialect::H2 => Some(DatabaseType::H2),
         StructureDialect::ClickHouse => Some(DatabaseType::ClickHouse),
         StructureDialect::ManticoreSearch => Some(DatabaseType::ManticoreSearch),
+        StructureDialect::Informix => Some(DatabaseType::Informix),
         StructureDialect::Unsupported => None,
     }
 }
