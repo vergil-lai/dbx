@@ -279,6 +279,14 @@ fn driver_manifest_declares_expected_product_capabilities() {
     assert!(!jdbc.capabilities.table_structure_edit);
     assert!(!jdbc.capabilities.user_admin);
 
+    let manticore = find_driver(DatabaseType::ManticoreSearch);
+    assert_eq!(manticore.support_level, "operate");
+    assert!(manticore.capabilities.metadata_browse);
+    assert!(manticore.capabilities.sql_file_execution);
+    assert!(manticore.capabilities.table_structure_edit);
+    assert!(!manticore.capabilities.object_browser);
+    assert!(manticore.capabilities.table_data_edit);
+
     let redis = find_driver(DatabaseType::Redis);
     assert_eq!(redis.support_level, "connect");
     assert!(!redis.capabilities.object_browser);

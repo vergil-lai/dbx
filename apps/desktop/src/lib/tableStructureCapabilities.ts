@@ -214,6 +214,13 @@ const influxdbCapabilities = capabilities({
   comment: false,
 });
 
+const manticoreSearchCapabilities = capabilities({
+  dialect: "mysql",
+  createTable: true,
+  addColumn: true,
+  dropColumn: true,
+});
+
 const capabilityByType: Partial<Record<DatabaseType, TableStructureCapabilities>> = {
   mysql: mysqlCapabilities,
   doris: mysqlCapabilities,
@@ -247,6 +254,7 @@ const capabilityByType: Partial<Record<DatabaseType, TableStructureCapabilities>
   access: accessCapabilities,
   clickhouse: clickhouseCapabilities,
   influxdb: influxdbCapabilities,
+  manticoresearch: manticoreSearchCapabilities,
 };
 
 export function getTableStructureCapabilities(dbType?: DatabaseType): TableStructureCapabilities {
@@ -256,4 +264,9 @@ export function getTableStructureCapabilities(dbType?: DatabaseType): TableStruc
 export function canEditTableStructure(dbType?: DatabaseType): boolean {
   const caps = getTableStructureCapabilities(dbType);
   return caps.createTable || caps.addColumn || caps.alterExistingColumn || caps.createIndex || caps.dropIndex;
+}
+
+export function canAddTableStructureColumn(dbType: DatabaseType | undefined, isCreateMode: boolean): boolean {
+  const caps = getTableStructureCapabilities(dbType);
+  return isCreateMode ? caps.createTable : caps.addColumn;
 }
