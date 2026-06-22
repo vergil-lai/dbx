@@ -978,7 +978,7 @@ fn postgres_tables_sql() -> &'static str {
          LEFT JOIN pg_catalog.pg_class pc ON pc.oid = i.inhparent \
          LEFT JOIN pg_catalog.pg_namespace pn ON pn.oid = pc.relnamespace \
          WHERE n.nspname = $1 AND c.relkind IN ('r','v','m','f','p') \
-           AND ($2 = '%%' OR c.relname ILIKE $2 ESCAPE '\\') \
+           AND ($2 = '%%' OR c.relname ILIKE $2 ESCAPE '~') \
          ORDER BY c.relname \
          LIMIT $3 OFFSET $4"
 }
@@ -991,8 +991,8 @@ fn like_contains_pattern(value: &str) -> String {
     let mut pattern = String::with_capacity(value.len() + 2);
     pattern.push('%');
     for ch in value.chars() {
-        if ch == '\\' || ch == '%' || ch == '_' {
-            pattern.push('\\');
+        if ch == '~' || ch == '%' || ch == '_' {
+            pattern.push('~');
         }
         pattern.push(ch);
     }
@@ -2480,7 +2480,15 @@ mod tests {
     #[test]
     fn like_contains_pattern_escapes_wildcards() {
         assert_eq!(like_contains_pattern(""), "%%");
-        assert_eq!(like_contains_pattern("order_100%"), "%order\\_100\\%%");
-        assert_eq!(like_contains_pattern(r"foo\bar"), r"%foo\\bar%");
+        assert_eq!(like_contains_pattern("order_100%"), "%order~_100~%%");
+        assert_eq!(like_contains_pattern("tilde~name"), "%tilde~~name%");
+        assert_eq!(like_contains_pattern(r"foo\bar"), r"%foo\bar%");
+    }
+
+    #[test]
+    fn postgres_tables_sql_uses_non_backslash_like_escape() {
+        let sql = postgres_tables_sql();
+
+        assert!(sql.contains("ILIKE $2 ESCAPE '~'"));
     }
 }
