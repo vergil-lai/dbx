@@ -134,6 +134,118 @@ fn pg_float_number(v: f64) -> serde_json::Value {
     serde_json::Number::from_f64(v).map(serde_json::Value::Number).unwrap_or(serde_json::Value::Null)
 }
 
+fn decode_pg_network_address_bytes(raw: &[u8], force_cidr_output: bool) -> Option<String> {
+    let family = *raw.first()?;
+    let bits = *raw.get(1)?;
+    let is_cidr = *raw.get(2)? != 0;
+    let addr_len = *raw.get(3)? as usize;
+    let addr = raw.get(4..)?;
+    if addr.len() != addr_len {
+        return None;
+    }
+
+    let (address, host_bits) = match (family, addr_len) {
+        (2, 4) => {
+            let bytes: [u8; 4] = addr.try_into().ok()?;
+            (std::net::IpAddr::V4(std::net::Ipv4Addr::from(bytes)).to_string(), 32)
+        }
+        (3, 16) => {
+            let bytes: [u8; 16] = addr.try_into().ok()?;
+            (std::net::IpAddr::V6(std::net::Ipv6Addr::from(bytes)).to_string(), 128)
+        }
+        _ => return None,
+    };
+
+    if bits > host_bits {
+        return None;
+    }
+
+    if force_cidr_output || is_cidr || bits != host_bits {
+        Some(format!("{address}/{bits}"))
+    } else {
+        Some(address)
+    }
+}
+
+fn decode_pg_macaddr_bytes(raw: &[u8]) -> Option<String> {
+    if !matches!(raw.len(), 6 | 8) {
+        return None;
+    }
+    Some(raw.iter().map(|byte| format!("{byte:02x}")).collect::<Vec<_>>().join(":"))
+}
+
+fn decode_pg_bit_string_bytes(raw: &[u8]) -> Option<String> {
+    let mut cursor = 0;
+    let bit_len = read_i32_be(raw, &mut cursor)?;
+    if bit_len < 0 {
+        return None;
+    }
+    let bit_len = bit_len as usize;
+    let data = raw.get(cursor..)?;
+    if data.len() != bit_len.div_ceil(8) {
+        return None;
+    }
+
+    let mut bits = String::with_capacity(bit_len);
+    for index in 0..bit_len {
+        let byte = data[index / 8];
+        let bit = (byte >> (7 - (index % 8))) & 1;
+        bits.push(if bit == 1 { '1' } else { '0' });
+    }
+    Some(bits)
+}
+
+fn pg_network_address_to_json_value(row: &Row, idx: usize, force_cidr_output: bool) -> Option<serde_json::Value> {
+    row.try_get::<_, PgRawBytes>(idx)
+        .ok()
+        .and_then(|raw| decode_pg_network_address_bytes(&raw.0, force_cidr_output))
+        .map(serde_json::Value::String)
+}
+
+fn pg_macaddr_to_json_value(row: &Row, idx: usize) -> Option<serde_json::Value> {
+    row.try_get::<_, PgRawBytes>(idx)
+        .ok()
+        .and_then(|raw| decode_pg_macaddr_bytes(&raw.0))
+        .map(serde_json::Value::String)
+}
+
+fn pg_bit_string_to_json_value(row: &Row, idx: usize) -> Option<serde_json::Value> {
+    row.try_get::<_, PgRawBytes>(idx)
+        .ok()
+        .and_then(|raw| decode_pg_bit_string_bytes(&raw.0))
+        .map(serde_json::Value::String)
+}
+
+fn pg_network_address_array_to_json_value(row: &Row, idx: usize, force_cidr_output: bool) -> Option<serde_json::Value> {
+    row.try_get::<_, Vec<Option<PgRawBytes>>>(idx).ok().map(|values| {
+        pg_optional_array_to_json(values, |raw| {
+            decode_pg_network_address_bytes(&raw.0, force_cidr_output)
+                .map(serde_json::Value::String)
+                .unwrap_or_else(|| super::binary_value_to_json(&raw.0))
+        })
+    })
+}
+
+fn pg_macaddr_array_to_json_value(row: &Row, idx: usize) -> Option<serde_json::Value> {
+    row.try_get::<_, Vec<Option<PgRawBytes>>>(idx).ok().map(|values| {
+        pg_optional_array_to_json(values, |raw| {
+            decode_pg_macaddr_bytes(&raw.0)
+                .map(serde_json::Value::String)
+                .unwrap_or_else(|| super::binary_value_to_json(&raw.0))
+        })
+    })
+}
+
+fn pg_bit_string_array_to_json_value(row: &Row, idx: usize) -> Option<serde_json::Value> {
+    row.try_get::<_, Vec<Option<PgRawBytes>>>(idx).ok().map(|values| {
+        pg_optional_array_to_json(values, |raw| {
+            decode_pg_bit_string_bytes(&raw.0)
+                .map(serde_json::Value::String)
+                .unwrap_or_else(|| super::binary_value_to_json(&raw.0))
+        })
+    })
+}
+
 fn pg_array_to_json_value(row: &Row, idx: usize) -> Option<serde_json::Value> {
     if let Ok(values) = row.try_get::<_, Vec<Option<String>>>(idx) {
         return Some(pg_optional_array_to_json(values, serde_json::Value::String));
@@ -239,6 +351,18 @@ fn pg_value_to_json(row: &Row, idx: usize, type_name: &str) -> serde_json::Value
             .unwrap_or(serde_json::Value::Null);
     }
 
+    if matches!(upper.as_str(), "INET" | "CIDR") {
+        return pg_network_address_to_json_value(row, idx, upper == "CIDR").unwrap_or(serde_json::Value::Null);
+    }
+
+    if matches!(upper.as_str(), "MACADDR" | "MACADDR8") {
+        return pg_macaddr_to_json_value(row, idx).unwrap_or(serde_json::Value::Null);
+    }
+
+    if matches!(upper.as_str(), "BIT" | "VARBIT") {
+        return pg_bit_string_to_json_value(row, idx).unwrap_or(serde_json::Value::Null);
+    }
+
     if upper == "TSVECTOR" {
         return row
             .try_get::<_, PgRawBytes>(idx)
@@ -250,6 +374,18 @@ fn pg_value_to_json(row: &Row, idx: usize, type_name: &str) -> serde_json::Value
 
     if matches!(upper.as_str(), "OID" | "XID" | "CID") {
         return pg_system_u32_to_json(row, idx).unwrap_or(serde_json::Value::Null);
+    }
+
+    if matches!(upper.as_str(), "_INET" | "_CIDR") {
+        return pg_network_address_array_to_json_value(row, idx, upper == "_CIDR").unwrap_or(serde_json::Value::Null);
+    }
+
+    if matches!(upper.as_str(), "_MACADDR" | "_MACADDR8") {
+        return pg_macaddr_array_to_json_value(row, idx).unwrap_or(serde_json::Value::Null);
+    }
+
+    if matches!(upper.as_str(), "_BIT" | "_VARBIT") {
+        return pg_bit_string_array_to_json_value(row, idx).unwrap_or(serde_json::Value::Null);
     }
 
     if upper.starts_with('_') {
@@ -2233,6 +2369,65 @@ mod tests {
     fn decode_hex(hex: &str) -> Vec<u8> {
         assert_eq!(hex.len() % 2, 0, "hex input must have an even number of chars");
         (0..hex.len()).step_by(2).map(|idx| u8::from_str_radix(&hex[idx..idx + 2], 16).unwrap()).collect()
+    }
+
+    #[test]
+    fn decodes_postgres_inet_binary_output() {
+        assert_eq!(
+            decode_pg_network_address_bytes(&decode_hex("02200004c0a8010a"), false).as_deref(),
+            Some("192.168.1.10")
+        );
+        assert_eq!(
+            decode_pg_network_address_bytes(&decode_hex("0310001020010db8abcd00120000000000000001"), false).as_deref(),
+            Some("2001:db8:abcd:12::1/16")
+        );
+        assert_eq!(
+            decode_pg_network_address_bytes(&decode_hex("0340001020010db8abcd00120000000000000001"), false).as_deref(),
+            Some("2001:db8:abcd:12::1/64")
+        );
+    }
+
+    #[test]
+    fn decodes_postgres_cidr_binary_output() {
+        assert_eq!(
+            decode_pg_network_address_bytes(&decode_hex("02180104c0a80100"), true).as_deref(),
+            Some("192.168.1.0/24")
+        );
+        assert_eq!(
+            decode_pg_network_address_bytes(&decode_hex("02200104c0a8010a"), true).as_deref(),
+            Some("192.168.1.10/32")
+        );
+        assert_eq!(
+            decode_pg_network_address_bytes(&decode_hex("0380011000000000000000000000000000000001"), true).as_deref(),
+            Some("::1/128")
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_postgres_network_binary_output() {
+        assert_eq!(decode_pg_network_address_bytes(&[], false), None);
+        assert_eq!(decode_pg_network_address_bytes(&decode_hex("04200004c0a8010a"), false), None);
+        assert_eq!(decode_pg_network_address_bytes(&decode_hex("02210004c0a8010a"), false), None);
+        assert_eq!(decode_pg_network_address_bytes(&decode_hex("02200004c0a801"), false), None);
+    }
+
+    #[test]
+    fn decodes_postgres_macaddr_binary_output() {
+        assert_eq!(decode_pg_macaddr_bytes(&decode_hex("08002b010203")).as_deref(), Some("08:00:2b:01:02:03"));
+        assert_eq!(
+            decode_pg_macaddr_bytes(&decode_hex("08002bfffe010203")).as_deref(),
+            Some("08:00:2b:ff:fe:01:02:03")
+        );
+        assert_eq!(decode_pg_macaddr_bytes(&decode_hex("08002b")), None);
+    }
+
+    #[test]
+    fn decodes_postgres_bit_string_binary_output() {
+        assert_eq!(decode_pg_bit_string_bytes(&decode_hex("00000005a8")).as_deref(), Some("10101"));
+        assert_eq!(decode_pg_bit_string_bytes(&decode_hex("00000009a880")).as_deref(), Some("101010001"));
+        assert_eq!(decode_pg_bit_string_bytes(&decode_hex("00000000")).as_deref(), Some(""));
+        assert_eq!(decode_pg_bit_string_bytes(&decode_hex("00000005a8ff")), None);
+        assert_eq!(decode_pg_bit_string_bytes(&decode_hex("ffffffff")), None);
     }
 
     #[test]
